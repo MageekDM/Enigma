@@ -1,5 +1,3 @@
-char2ind(c::Char) = uppercase(c) - 'A' + 1
-ind2char(i::Int) = i + 'A' - 1
 function get_perm(str::String)
     p = Array(Int, length(str))
     for (i,c) in enumerate(str)

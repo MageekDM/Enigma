@@ -10,6 +10,9 @@ const MONOKAI_RED    = colorant"0xFF007FFF"
 const MONOKAI_ORANGE = colorant"0xF9971FFF"
 const MONOKAI_COBALT = colorant"0x79ABFFFF"
 
+char2ind(c::Char) = uppercase(c) - 'A' + 1
+ind2char(i::Int) = i + 'A' - 1
+
 function Cairo.set_source_rgba(ctx::CairoContext, color::RGB)
 
     # g = convert(Float64, gray(grayscale_transform(color)))
@@ -54,6 +57,22 @@ function Cairo.set_source_rgba(ctx::CairoContext, color₀::Colorant, color₁::
     set_source_rgba(ctx, r, g, b, a)
 end
 
+function render_text_centered(ctx::CairoContext, text::String, x::Real, y::Real;
+    font_size::Real=10.0,
+    color::Colorant = colorant"black",
+    )
+
+    Cairo.save(ctx)
+    select_font_face(ctx, "sans-serif", Cairo.FONT_SLANT_NORMAL, Cairo.FONT_WEIGHT_NORMAL)
+    set_font_size(ctx, font_size)
+    extents = text_extents(ctx, text)
+
+    set_source_rgba(ctx, color)
+    move_to(ctx, x - extents[3]/2, y + extents[4]/2)
+    show_text(ctx, text)
+    restore(ctx)
+end
+
 function get_surface_and_context(canvas_width::Int, canvas_height::Int)
     s = CairoRGBSurface(canvas_width, canvas_height)
     ctx = creategc(s)
@@ -77,6 +96,28 @@ end
 bezier(A::VecE2, B::VecE2, t::Float64) = lerp(A, B, t)
 bezier(A::VecE2, B::VecE2, C::VecE2, t::Float64) = (1-t)^2*A + 2*(1-t)*t*B + t*t*C
 bezier(A::VecE2, B::VecE2, C::VecE2, D::VecE2, t::Float64) = (1-t)^3*A + 3*(1-t)^2*t*B + 3*(1-t)*t*t*C + t*t*t*D
+
+type RotorRenderParams
+    margin_left::Float64
+    margin_top::Float64
+    sep_vert::Float64
+    sep_horz::Float64
+
+    function RotorRenderParams()
+        new(200.0, 50.0, 100.0, 200.0)
+    end
+    function RotorRenderParams(margin_left::Real, margin_top::Real, sep_vert::Real, sep_horz::Real)
+        new(
+            convert(Float64, margin_left),
+            convert(Float64, margin_top),
+            convert(Float64, sep_vert),
+            convert(Float64, sep_horz),
+        )
+    end
+end
+get_vertex_x(rp::RotorRenderParams, i::Int) = rp.margin_left + rp.sep_horz*(i-1)
+get_vertex_y(rp::RotorRenderParams, j::Int) = rp.margin_top + rp.sep_vert*(j-1)
+get_vertex_pos(rp::RotorRenderParams, i::Int, j::Int) = VecE2(get_vertex_x(rp, i), get_vertex_y(rp, j))
 
 type Rotor
     enshift::Vector{Int} # amount each input gets shifted
@@ -164,10 +205,7 @@ end
 function render!(ctx::CairoContext,
     rotor::Rotor,
     active_inputs::Vector{Int},
-    margin_left::Real,
-    margin_top::Real,
-    sep_vert::Real,
-    sep_horz::Real,
+    render_params::RotorRenderParams = RotorRenderParams(),
     )
 
     # compute the vertices
@@ -177,9 +215,9 @@ function render!(ctx::CairoContext,
     active_left = falses(n)
     active_right = falses(n)
     for i in 1 : n
-        points_left[i] = VecE2(margin_left, margin_top + sep_vert*(i-1))
+        points_left[i] = get_vertex_pos(render_params, 1, i)
         j = encode(rotor, i)
-        points_right[i] = VecE2(margin_left+sep_horz, margin_top + sep_vert*(j-1))
+        points_right[i] = get_vertex_pos(render_params, 2, j)
 
         if i in active_inputs
             active_left[i] = true
@@ -210,14 +248,11 @@ function render!(ctx::CairoContext,
 end
 function render(rotor::Rotor;
     active_inputs::Vector{Int}=Int[],
-    margin_left::Float64 = 200.0,
-    margin_top::Float64 = 50.0,
-    sep_vert::Float64 = 100.0,
-    sep_horz::Float64 = 200.0,
+    render_params::RotorRenderParams = RotorRenderParams(),
     )
 
     s, ctx = get_surface_and_context()
-    render!(ctx, rotor, active_inputs, margin_left, margin_top, sep_vert, sep_horz)
+    render!(ctx, rotor, active_inputs, render_params)
     s
 end
 
@@ -281,16 +316,15 @@ function decode(rotors::Vector{Rotor}, a::Int)
     a
 end
 function render(rotors::Vector{Rotor};
-    margin_top::Float64 = 50.0,
-    sep_vert::Float64 = 100.0,
-    sep_horz::Float64 = 200.0,
+    render_params::RotorRenderParams = RotorRenderParams(),
     )
 
     s, ctx = get_surface_and_context()
 
+    rp2 = deepcopy(render_params)
     for (i,rotor) in enumerate(rotors)
-        margin_left = 200.0*i
-        render!(ctx, rotor, Int[], margin_left, margin_top, sep_vert, sep_horz)
+        rp2.margin_left = get_vertex_x(render_params, i)
+        render!(ctx, rotor, Int[], rp2)
     end
 
     s
@@ -383,19 +417,16 @@ function render_trace!(
     enigma::Enigma,
     a::Int,
     color::Colorant,
-    margin_left::Real,
-    margin_top::Real,
-    sep_vert::Real,
-    sep_horz::Real,
+    render_params::RotorRenderParams,
     render_plugboard::Bool,
     )
 
-    P = VecE2(margin_left, margin_top + sep_vert*(a-1))
+    P = get_vertex_pos(render_params, 1, a)
     render_vertex!(ctx, P, color)
 
     if render_plugboard
         b = encode(enigma.plugboard, a)
-        Q = VecE2(P.x + sep_horz, margin_top + sep_vert*(b-1))
+        Q = VecE2(P.x + render_params.sep_horz, get_vertex_y(render_params, b))
         render_bezier_edge!(ctx, P, Q, color)
         render_vertex!(ctx, Q, color)
         a, P = b, Q
@@ -403,21 +434,21 @@ function render_trace!(
 
     for rotor in enigma.rotors
         b = encode(rotor, a)
-        Q = VecE2(P.x + sep_horz, margin_top + sep_vert*(b-1))
+        Q = VecE2(P.x + sep_horz, get_vertex_y(render_params, b))
         render_bezier_edge!(ctx, P, Q, color)
         render_vertex!(ctx, Q, color)
         a, P = b, Q
     end
 
     b = encode(enigma.ref, a)
-    Q = VecE2(P.x, margin_top + sep_vert*(b-1))
+    Q = VecE2(P.x, get_vertex_y(render_params, b))
     render_bezier_edge!(ctx, Q, P, color, reflect=true)
     render_vertex!(ctx, Q, color)
     a, P = b, Q
 
     for rotor in reverse(enigma.rotors)
         b = decode(rotor, a)
-        Q = VecE2(P.x - sep_horz, margin_top + sep_vert*(b-1))
+        Q = VecE2(P.x - render_params.sep_horz, get_vertex_y(render_params, b))
         render_bezier_edge!(ctx, Q, P, color)
         render_vertex!(ctx, Q, color)
         a, P = b, Q
@@ -425,7 +456,7 @@ function render_trace!(
 
     if render_plugboard
         b = decode(enigma.plugboard, a)
-        Q = VecE2(P.x - sep_horz, margin_top + sep_vert*(b-1))
+        Q = VecE2(P.x - render_params.sep_horz, get_vertex_y(render_params, b))
         render_bezier_edge!(ctx, P, Q, color, reflect=true)
         render_vertex!(ctx, Q, color)
         a, P = b, Q
@@ -437,10 +468,7 @@ function render!(
     ctx::CairoContext,
     enigma::Enigma,
     input::Int,
-    margin_left::Real,
-    margin_top::Real,
-    sep_vert::Real,
-    sep_horz::Real,
+    render_params::RotorRenderParams,
     render_plugboard::Bool,
     )
 
@@ -450,22 +478,19 @@ function render!(
             b = encode(enigma, a)
             push!(rendered, b)
             color = a == input || b == input ? MONOKAI_BLUE : MONOKAI_DARK
-            render_trace!(ctx, enigma, a, color, margin_left, margin_top, sep_vert, sep_horz, render_plugboard)
+            render_trace!(ctx, enigma, a, color, render_params, render_plugboard)
         end
     end
 
     ctx
 end
 function render(enigma::Enigma, input::Int=-1;
-    margin_left::Float64 = 200.0,
-    margin_top::Float64 = 50.0,
-    sep_vert::Float64 = 100.0,
-    sep_horz::Float64 = 200.0,
+    render_params::RotorRenderParams = RotorRenderParams(),
     render_plugboard::Bool=true,
     )
 
     s, ctx = get_surface_and_context()
-    render!(ctx, enigma, input, margin_left, margin_top, sep_vert, sep_horz, render_plugboard)
+    render!(ctx, enigma, input, render_params, render_plugboard)
     s
 end
 
@@ -474,37 +499,35 @@ function render_rotor_tick!(
     rotor::Rotor,
     t::Float64, # ∈ [0,1]
     color::Colorant,
-    margin_left::Real,
-    margin_top::Real,
-    sep_vert::Real,
-    sep_horz::Real,
+    render_params::RotorRenderParams = RotorRenderParams(),
+    bezier_strength::Real=125.0,
     )
 
     n = length(rotor)
     for a1 in 1 : n
 
         a2 = mod(a1, n)+1
-        P1 = VecE2(margin_left, margin_top + sep_vert*(a1-1))
-        P2 = VecE2(margin_left, margin_top + sep_vert*(a2-1))
+        P1 = get_vertex_pos(render_params, 1, a1)
+        P2 = get_vertex_pos(render_params, 1, a2)
 
         if a2 != 1
             P = bezier(P1, P2, t)
         else # use a special bezier
-            C = P1 + VecE2(0, 100.0)
-            D = P2 - VecE2(0, 100.0)
+            C = P1 + VecE2(0, bezier_strength)
+            D = P2 - VecE2(0, bezier_strength)
             P = bezier(P1, C, D, P2, t)
         end
 
         b1 = encode(rotor, a1)
         b2 = mod(b1,n)+1
-        Q1 = VecE2(P1.x + sep_horz, margin_top + sep_vert*(b1-1))
-        Q2 = VecE2(P1.x + sep_horz, margin_top + sep_vert*(b2-1))
+        Q1 = get_vertex_pos(render_params, 2, b1)
+        Q2 = get_vertex_pos(render_params, 2, b2)
 
         if b2 != 1
             Q = bezier(Q1, Q2, t)
         else
-            C = Q1 + VecE2(0, 100.0)
-            D = Q2 - VecE2(0, 100.0)
+            C = Q1 + VecE2(0, bezier_strength)
+            D = Q2 - VecE2(0, bezier_strength)
             Q = bezier(Q1, C, D, Q2, t)
         end
 
@@ -520,27 +543,26 @@ function render_engima_tick!(
     enigma::Enigma,
     t::Float64, # ∈ [0,1]
     color::Colorant,
-    margin_left::Real,
-    margin_top::Real,
-    sep_vert::Real,
-    sep_horz::Real,
-    render_plugboard::Bool,
+    render_params::RotorRenderParams = RotorRenderParams(),
+    render_plugboard::Bool = true,
     )
 
     n = length(enigma)
+
+    left_offset = 0
 
     if render_plugboard
         plugboard = enigma.plugboard
         for a in 1 : n
             b = encode(plugboard, a)
-            A = VecE2(margin_left, margin_top + sep_vert*(a-1))
-            B = VecE2(margin_left + sep_horz, margin_top + sep_vert*(b-1))
+            A = get_vertex_pos(render_params, 1, a)
+            B = get_vertex_pos(render_params, 2, b)
             render_bezier_edge!(ctx, A, B, color)
             render_vertex!(ctx, A, color)
             render_vertex!(ctx, B, color)
         end
 
-        margin_left += sep_horz
+        render_params.margin_left += render_params.sep_horz
     end
 
     n_rotors = length(enigma.rotors)
@@ -548,31 +570,88 @@ function render_engima_tick!(
     done = false
     while !done
         rotor = enigma.rotors[rotor_index]
-        render_rotor_tick!(ctx, rotor, t, color, margin_left+sep_horz*(rotor_index-1), margin_top, sep_vert, sep_horz)
+
+        rp2 = deepcopy(render_params)
+        rp2.margin_left = render_params.margin_left + render_params.sep_horz*(rotor_index-1)
+
+        render_rotor_tick!(ctx, rotor, t, color, rp2)
         done = rotor_index != n_rotors || in(mod(rotor.rotor_position,n)+1, rotor.knock_points)
         rotor_index += 1
     end
 
     while rotor_index ≤ n_rotors
-        render!(ctx, rotor, Int[], margin_left+sep_horz*(rotor_index-1), margin_top, sep_vert, sep_horz)
+
+        rp2 = deepcopy(render_params)
+        rp2.margin_left = render_params.margin_left + render_params.sep_horz*(rotor_index-1)
+
+        render!(ctx, rotor, Int[], rp2)
         rotor_index += 1
     end
 
     # render the reflector
     rendered = Set{Int}()
-    ref_x = margin_left+sep_horz*n_rotors
+    ref_x = get_vertex_x(render_params, n_rotors+1)
     for a in 1 : n
         if !in(a, rendered)
             b = encode(enigma.ref, a)
             push!(rendered, b)
 
-            A = VecE2(ref_x, margin_top + sep_vert*(a-1))
-            B = VecE2(ref_x, margin_top + sep_vert*(b-1))
+            A = VecE2(ref_x, get_vertex_y(render_params, a))
+            B = VecE2(ref_x, get_vertex_y(render_params, b))
             render_bezier_edge!(ctx, A, B, color, reflect=true)
             render_vertex!(ctx, A, color)
             render_vertex!(ctx, B, color)
         end
     end
+
+    if render_plugboard
+        render_params.margin_left -= render_params.sep_horz
+    end
+
+    ctx
+end
+function render_enigma_labels!(
+    ctx::CairoContext,
+    enigma::Enigma,
+    render_params::RotorRenderParams = RotorRenderParams(),
+    render_plugboard::Bool = true,
+    font_size::Real=20.0,
+    )
+
+    P = VecE2(render_params.margin_left + render_params.sep_horz*0.5, get_vertex_y(render_params, 1) - 1.5*font_size)
+
+    if render_plugboard
+        render_text_centered(ctx, "Plugboard", P.x, P.y, font_size=font_size)
+        P = P + VecE2(render_params.sep_horz, 0)
+    end
+
+    for i in 1 : length(enigma.rotors)
+        text = @sprintf("Rotor %d", i)
+        render_text_centered(ctx, text, P.x, P.y, font_size=font_size)
+        P = P + VecE2(render_params.sep_horz, 0)
+    end
+
+    render_text_centered(ctx, "Reflector", P.x, P.y, font_size=font_size)
+
+    ctx
+end
+function render_enigma_io!(
+    ctx::CairoContext,
+    enigma::Enigma,
+    a::Int,
+    alphabet::Vector{Char},
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    )
+
+    b = encode(enigma, a)
+
+    x = get_vertex_x(render_params, 1) - 50.0
+    P = VecE2(x, get_vertex_y(render_params, a))
+    Q = VecE2(x, get_vertex_y(render_params, b))
+
+    render_text_centered(ctx, string(alphabet[a]), P.x, P.y, font_size=font_size)
+    render_text_centered(ctx, string(alphabet[b]), Q.x, Q.y, font_size=font_size)
 
     ctx
 end
