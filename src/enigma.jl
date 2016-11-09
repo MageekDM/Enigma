@@ -1,6 +1,7 @@
 using Cairo
 using Colors
 using Vec
+using Reel
 
 const MONOKAI_LITE = colorant"0xCFBFADFF"
 const MONOKAI_DARK = colorant"0x272822FF"
@@ -57,13 +58,29 @@ function Cairo.set_source_rgba(ctx::CairoContext, color₀::Colorant, color₁::
     set_source_rgba(ctx, r, g, b, a)
 end
 
-function render_text_centered(ctx::CairoContext, text::String, x::Real, y::Real;
+function render_text(ctx::CairoContext, text::String, x::Real, y::Real;
     font_size::Real=10.0,
     color::Colorant = colorant"black",
+    font_face::String="sans-serif",
     )
 
     Cairo.save(ctx)
-    select_font_face(ctx, "sans-serif", Cairo.FONT_SLANT_NORMAL, Cairo.FONT_WEIGHT_NORMAL)
+    select_font_face(ctx, font_face, Cairo.FONT_SLANT_NORMAL, Cairo.FONT_WEIGHT_NORMAL)
+    set_font_size(ctx, font_size)
+
+    set_source_rgba(ctx, color)
+    move_to(ctx, x, y)
+    show_text(ctx, text)
+    restore(ctx)
+end
+function render_text_centered(ctx::CairoContext, text::String, x::Real, y::Real;
+    font_size::Real=10.0,
+    color::Colorant = colorant"black",
+    font_face::String="sans-serif",
+    )
+
+    Cairo.save(ctx)
+    select_font_face(ctx, font_face, Cairo.FONT_SLANT_NORMAL, Cairo.FONT_WEIGHT_NORMAL)
     set_font_size(ctx, font_size)
     extents = text_extents(ctx, text)
 
@@ -80,7 +97,7 @@ function get_surface_and_context(canvas_width::Int, canvas_height::Int)
 end
 function get_surface_and_context(;
     canvas_width::Int = 1000,
-    canvas_height::Int = 400,
+    canvas_height::Int = 500,
     background_color::Colorant = colorant"white",
     )
 
@@ -388,14 +405,45 @@ function encode(enigma::Enigma, a::Int)
     decode(enigma.rotors, c)
 end
 decode(enigma::Enigma, b::Int) = encode(enigma, b)
-function tick!(enigma::Enigma, rotor_index::Int=1)
-    rotor = enigma.rotors[rotor_index]
 
+function tick_with_mathematical_purity!(enigma::Enigma, rotor_index::Int=1)
+
+    # rotate the way you would expect.
+    # Thus "double stepping" does not occur, as it does with the real Enigma
+
+    rotor = enigma.rotors[rotor_index]
     if mod(rotor.rotor_position,length(rotor))+1 in rotor.knock_points && rotor_index < length(enigma.rotors)
         # rotate the next rotor as well
         tick!(enigma, rotor_index+1)
     end
     tick!(rotor) # rotate this rotor
+    enigma
+end
+function tick!(enigma::Enigma)
+
+    # rotor 1 is always moved
+    # if a rotor is in its notch position, it also moves the rotor to its right
+
+    # 1 - identify rotors that are to be moved
+    # 2 - move them
+
+    n_rotors = length(enigma.rotors)
+    move = falses(n_rotors)
+    move[1] = true # always move the first rotor
+
+    for (i,rotor) in enumerate(enigma.rotors)
+        if i != n_rotors && mod(rotor.rotor_position,length(rotor))+1 in rotor.knock_points
+            move[i] = true # rotate this guy
+            move[i+1] = true # rotate next guy
+        end
+    end
+
+    for (i,it_moves) in enumerate(move)
+        if it_moves
+            tick!(enigma.rotors[i])
+        end
+    end
+
     enigma
 end
 
@@ -434,7 +482,7 @@ function render_trace!(
 
     for rotor in enigma.rotors
         b = encode(rotor, a)
-        Q = VecE2(P.x + sep_horz, get_vertex_y(render_params, b))
+        Q = VecE2(P.x + render_params.sep_horz, get_vertex_y(render_params, b))
         render_bezier_edge!(ctx, P, Q, color)
         render_vertex!(ctx, Q, color)
         a, P = b, Q
@@ -484,15 +532,6 @@ function render!(
 
     ctx
 end
-function render(enigma::Enigma, input::Int=-1;
-    render_params::RotorRenderParams = RotorRenderParams(),
-    render_plugboard::Bool=true,
-    )
-
-    s, ctx = get_surface_and_context()
-    render!(ctx, enigma, input, render_params, render_plugboard)
-    s
-end
 
 function render_rotor_tick!(
     ctx::CairoContext,
@@ -506,28 +545,28 @@ function render_rotor_tick!(
     n = length(rotor)
     for a1 in 1 : n
 
-        a2 = mod(a1, n)+1
+        a2 = mod(a1-2, n)+1
         P1 = get_vertex_pos(render_params, 1, a1)
         P2 = get_vertex_pos(render_params, 1, a2)
 
-        if a2 != 1
+        if a2 != n
             P = bezier(P1, P2, t)
         else # use a special bezier
-            C = P1 + VecE2(0, bezier_strength)
-            D = P2 - VecE2(0, bezier_strength)
+            C = P1 - VecE2(0, bezier_strength)
+            D = P2 + VecE2(0, bezier_strength)
             P = bezier(P1, C, D, P2, t)
         end
 
         b1 = encode(rotor, a1)
-        b2 = mod(b1,n)+1
+        b2 = mod(b1-2,n)+1
         Q1 = get_vertex_pos(render_params, 2, b1)
         Q2 = get_vertex_pos(render_params, 2, b2)
 
-        if b2 != 1
+        if b2 != n
             Q = bezier(Q1, Q2, t)
         else
-            C = Q1 + VecE2(0, bezier_strength)
-            D = Q2 - VecE2(0, bezier_strength)
+            C = Q1 -VecE2(0, bezier_strength)
+            D = Q2 + VecE2(0, bezier_strength)
             Q = bezier(Q1, C, D, Q2, t)
         end
 
@@ -575,7 +614,7 @@ function render_engima_tick!(
         rp2.margin_left = render_params.margin_left + render_params.sep_horz*(rotor_index-1)
 
         render_rotor_tick!(ctx, rotor, t, color, rp2)
-        done = rotor_index != n_rotors || in(mod(rotor.rotor_position,n)+1, rotor.knock_points)
+        done = rotor_index == n_rotors || !in(mod(rotor.rotor_position,n)+1, rotor.knock_points)
         rotor_index += 1
     end
 
@@ -639,21 +678,154 @@ function render_enigma_io!(
     ctx::CairoContext,
     enigma::Enigma,
     a::Int,
-    alphabet::Vector{Char},
+    alphabet::Vector{Char};
     render_params::RotorRenderParams = RotorRenderParams(),
     font_size::Real=20.0,
+    only_input::Bool=false,
     )
 
-    b = encode(enigma, a)
+    if 1 ≤ a ≤ length(alphabet)
+        b = encode(enigma, a)
 
-    x = get_vertex_x(render_params, 1) - 50.0
-    P = VecE2(x, get_vertex_y(render_params, a))
-    Q = VecE2(x, get_vertex_y(render_params, b))
+        x = get_vertex_x(render_params, 1) - 50.0
+        P = VecE2(x, get_vertex_y(render_params, a))
+        Q = VecE2(x, get_vertex_y(render_params, b))
 
-    render_text_centered(ctx, string(alphabet[a]), P.x, P.y, font_size=font_size)
-    render_text_centered(ctx, string(alphabet[b]), Q.x, Q.y, font_size=font_size)
+        render_text_centered(ctx, string(alphabet[a]), P.x, P.y, font_size=font_size)
+        if !only_input
+            render_text_centered(ctx, string(alphabet[b]), Q.x, Q.y, font_size=font_size)
+        end
+    end
 
     ctx
+end
+function render_text_and_ciphertext!(
+    ctx::CairoContext,
+    enigma::Enigma,
+    text::String,
+    cipher_text::String;
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    only_input::Bool=false,
+    font_face::String="monospace",
+    )
+
+    x = get_vertex_x(render_params, 1)
+    y = get_vertex_y(render_params, length(enigma))
+
+    render_text(ctx, text, x, y + 50, font_size=font_size, font_face=font_face)
+    if !only_input
+        render_text(ctx, cipher_text, x, y + 100, font_size=font_size, font_face=font_face)
+    end
+    ctx
+end
+function render_text_and_ciphertext!(
+    s::CairoSurface,
+    enigma::Enigma,
+    text::String,
+    cipher_text::String;
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    only_input::Bool=false,
+    )
+
+    ctx = creategc(s)
+    render_text_and_ciphertext!(ctx, enigma, text, cipher_text, render_params=render_params, font_size=font_size, only_input=only_input)
+    s
+end
+
+function render(enigma::Enigma, input::Int=-1;
+    render_params::RotorRenderParams = RotorRenderParams(),
+    render_plugboard::Bool=true,
+    render_labels::Bool=true,
+    render_input::Bool=false,
+    do_not_render_trace::Bool=false,
+    only_input::Bool=false,
+    )
+
+    s, ctx = get_surface_and_context()
+    render!(ctx, enigma, do_not_render_trace ? -1 : input, render_params, render_plugboard)
+    if render_labels
+        render_enigma_labels!(ctx, enigma, render_params, render_plugboard)
+    end
+    if render_input
+        render_enigma_io!(ctx, enigma, input, alphabet, render_params, only_input=only_input)
+    end
+    s
+end
+
+function play_animation(enigma::Enigma, input::String, alphabet::Vector{Char},
+    render_params::RotorRenderParams = RotorRenderParams(),
+    render_plugboard::Bool=true,
+    font_size::Real=20.0,
+    fps::Int=12,
+    fp_render_nothing=6,
+    fp_show_input_first=2,
+    fp_rot::Int=24,
+    fp_show_trace=4,
+    )
+
+    input_text = ""
+    cipher_text = ""
+
+    frames = Frames(MIME("image/png"), fps=fps)
+
+    # render empty machine first
+    s = render(enigma, render_params=render_params, render_plugboard=render_plugboard)
+    s = render_text_and_ciphertext!(s, enigma, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+    for i in 1 : fp_render_nothing
+        push!(frames, s)
+    end
+
+    input_index = 1
+    while input_index ≤ length(input)
+
+        while input_index ≤ length(input) && input[input_index] == ' '
+            input_text = input_text * " "
+            cipher_text = cipher_text * " "
+            input_index += 1
+        end
+        if input_index > length(input)
+            break
+        end
+
+        A = input[input_index]
+        a = findfirst(alphabet, A)
+
+        # show input first
+        s = render(enigma, a, render_params=render_params, render_plugboard=render_plugboard, do_not_render_trace=true, only_input=true)
+        s = render_text_and_ciphertext!(s, enigma, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+        for i in 1 : fp_show_input_first
+            push!(frames, s)
+        end
+
+        # rotate the machine
+        for i in 1 : fp_rot
+            t = i/fp_rot
+            s, ctx = get_surface_and_context()
+            render_engima_tick!(ctx, enigma, t, MONOKAI_DARK, render_params, render_plugboard)
+            render_enigma_labels!(ctx, enigma, render_params, render_plugboard)
+            render_enigma_io!(ctx, enigma, a, alphabet, render_params=render_params, font_size=font_size, only_input=true)
+            render_text_and_ciphertext!(ctx, enigma, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+            push!(frames, s)
+        end
+
+        # show trace
+        tick!(enigma)
+        b = encode(enigma, a)
+        B = alphabet[b]
+        input_text = input_text * string(A)
+        cipher_text = cipher_text * string(B)
+        s = render(enigma, a, render_params=render_params, render_plugboard=render_plugboard, do_not_render_trace=false, only_input=false)
+        s = render_text_and_ciphertext!(s, enigma, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+        for i in 1 : fp_show_trace
+            push!(frames, s)
+        end
+
+        input_index += 1
+    end
+
+    frames
 end
 
 include("fullsize.jl")
