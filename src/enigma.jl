@@ -120,15 +120,20 @@ type RotorRenderParams
     sep_vert::Float64
     sep_horz::Float64
 
+    vertex_radius::Float64
+    line_width::Float64
+
     function RotorRenderParams()
-        new(200.0, 50.0, 100.0, 200.0)
+        new(200.0, 50.0, 100.0, 200.0, 10.0, 5.0)
     end
-    function RotorRenderParams(margin_left::Real, margin_top::Real, sep_vert::Real, sep_horz::Real)
+    function RotorRenderParams(margin_left::Real, margin_top::Real, sep_vert::Real, sep_horz::Real, vertex_radius::Real, line_width::Real)
         new(
             convert(Float64, margin_left),
             convert(Float64, margin_top),
             convert(Float64, sep_vert),
             convert(Float64, sep_horz),
+            convert(Float64, vertex_radius),
+            convert(Float64, line_width),
         )
     end
 end
@@ -219,47 +224,86 @@ function render_vertex!(ctx::CairoContext, P::VecE2, color::Colorant=MONOKAI_DAR
 
     ctx
 end
+function render_text_and_ciphertext!(
+    ctx::CairoContext,
+    rotor::Rotor,
+    text::String,
+    cipher_text::String;
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    only_input::Bool=false,
+    font_face::String="monospace",
+    )
+
+    x = get_vertex_x(render_params, 1)
+    y = get_vertex_y(render_params, length(rotor))
+
+    render_text(ctx, text, x, y + 50, font_size=font_size, font_face=font_face, color=MONOKAI_DARK)
+    if !only_input
+        render_text(ctx, cipher_text, x, y + 100, font_size=font_size, font_face=font_face, color=MONOKAI_COBALT)
+    end
+    ctx
+end
+function render_text_and_ciphertext!(
+    s::CairoSurface,
+    rotor::Rotor,
+    text::String,
+    cipher_text::String;
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    only_input::Bool=false,
+    )
+
+    ctx = creategc(s)
+    render_text_and_ciphertext!(ctx, rotor, text, cipher_text, render_params=render_params, font_size=font_size, only_input=only_input)
+    s
+end
+function render_alphabet!(
+    ctx::CairoContext,
+    rotor::Rotor,
+    alphabet::Vector{Char};
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    )
+
+    for (i, c) in enumerate(alphabet)
+        P = get_vertex_pos(render_params, 1, i)
+        Q = get_vertex_pos(render_params, 2, i)
+
+        render_text_centered(ctx, string(c), P.x - 50.0, P.y, font_size=font_size, color=MONOKAI_DARK)
+        render_text_centered(ctx, string(c), Q.x + 50.0, Q.y, font_size=font_size, color=MONOKAI_DARK)
+    end
+    ctx
+end
 function render!(ctx::CairoContext,
     rotor::Rotor,
     active_inputs::Vector{Int},
     render_params::RotorRenderParams = RotorRenderParams(),
     )
 
-    # compute the vertices
-    n = length(rotor.enshift)
-    points_left = Array(VecE2, n)
-    points_right = Array(VecE2, n)
-    active_left = falses(n)
-    active_right = falses(n)
-    for i in 1 : n
-        points_left[i] = get_vertex_pos(render_params, 1, i)
-        j = encode(rotor, i)
-        points_right[i] = get_vertex_pos(render_params, 2, j)
+    n = length(rotor)
+    for a in 1 : n
+        if !in(a, active_inputs)
+            P = get_vertex_pos(render_params, 1, a)
 
-        if i in active_inputs
-            active_left[i] = true
-            active_right[i] = true
+            b = encode(rotor, a)
+            Q = get_vertex_pos(render_params, 2, b)
+
+            render_vertex!(ctx, P, MONOKAI_DARK, radius=render_params.vertex_radius)
+            render_vertex!(ctx, Q, MONOKAI_DARK, radius=render_params.vertex_radius)
+            render_bezier_edge!(ctx, P, Q, MONOKAI_DARK, line_width=render_params.line_width)
         end
     end
+    for a in active_inputs
+        P = get_vertex_pos(render_params, 1, a)
 
-    # render the vertices
-    radius = 10.0
-    save(ctx)
-    for (points, active) in zip((points_left, points_right),
-                                (active_left, active_right))
-        for (i, pt) in enumerate(points)
-            render_vertex!(ctx, pt, active_left[i] ? MONOKAI_COBALT : MONOKAI_DARK)
-        end
-    end
-    restore(ctx)
+        b = encode(rotor, a)
+        Q = get_vertex_pos(render_params, 2, b)
 
-    # render the connections
-    save(ctx)
-    for i in 1 : n
-        A, D = points_left[i], points_right[i]
-        render_bezier_edge!(ctx, A, D, active_left[i] ? MONOKAI_COBALT : MONOKAI_DARK)
+        render_vertex!(ctx, P, MONOKAI_COBALT, radius=render_params.vertex_radius)
+        render_vertex!(ctx, Q, MONOKAI_COBALT, radius=render_params.vertex_radius)
+        render_bezier_edge!(ctx, P, Q, MONOKAI_COBALT, line_width=render_params.line_width)
     end
-    restore(ctx)
 
     ctx
 end
@@ -397,6 +441,18 @@ type Enigma
     plugboard::Plugboard
     rotors::Vector{Rotor}
     ref::Reflector
+    alphabet::Vector{Char}
+    emulate_double_stepping::Bool # the original enigmas had a weird double-stepping effect that can also be emulated
+
+    function Enigma(
+        plugboard::Plugboard,
+        rotors::Vector{Rotor},
+        ref::Reflector,
+        alphabet::Vector{Char},
+        emulate_double_stepping::Bool=false,
+        )
+        new(plugboard, rotors, ref, alphabet, emulate_double_stepping)
+    end
 end
 Base.length(enigma::Enigma) = length(enigma.ref)
 function encode(enigma::Enigma, a::Int)
@@ -414,12 +470,12 @@ function tick_with_mathematical_purity!(enigma::Enigma, rotor_index::Int=1)
     rotor = enigma.rotors[rotor_index]
     if mod(rotor.rotor_position,length(rotor))+1 in rotor.knock_points && rotor_index < length(enigma.rotors)
         # rotate the next rotor as well
-        tick!(enigma, rotor_index+1)
+        tick_with_mathematical_purity!(enigma, rotor_index+1)
     end
     tick!(rotor) # rotate this rotor
     enigma
 end
-function tick!(enigma::Enigma)
+function tick_with_double_stepping!(enigma::Enigma)
 
     # rotor 1 is always moved
     # if a rotor is in its notch position, it also moves the rotor to its right
@@ -446,6 +502,14 @@ function tick!(enigma::Enigma)
 
     enigma
 end
+function tick!(enigma::Enigma)
+    if enigma.emulate_double_stepping
+        tick_with_double_stepping!(enigma)
+    else
+        tick_with_mathematical_purity!(enigma)
+    end
+    enigma
+end
 
 function encode!(enigma::Enigma, a::Int)
     #=
@@ -470,43 +534,43 @@ function render_trace!(
     )
 
     P = get_vertex_pos(render_params, 1, a)
-    render_vertex!(ctx, P, color)
+    render_vertex!(ctx, P, color, radius=render_params.vertex_radius)
 
     if render_plugboard
         b = encode(enigma.plugboard, a)
         Q = VecE2(P.x + render_params.sep_horz, get_vertex_y(render_params, b))
-        render_bezier_edge!(ctx, P, Q, color)
-        render_vertex!(ctx, Q, color)
+        render_bezier_edge!(ctx, P, Q, color, line_width=render_params.line_width)
+        render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
         a, P = b, Q
     end
 
     for rotor in enigma.rotors
         b = encode(rotor, a)
         Q = VecE2(P.x + render_params.sep_horz, get_vertex_y(render_params, b))
-        render_bezier_edge!(ctx, P, Q, color)
-        render_vertex!(ctx, Q, color)
+        render_bezier_edge!(ctx, P, Q, color, line_width=render_params.line_width)
+        render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
         a, P = b, Q
     end
 
     b = encode(enigma.ref, a)
     Q = VecE2(P.x, get_vertex_y(render_params, b))
-    render_bezier_edge!(ctx, Q, P, color, reflect=true)
-    render_vertex!(ctx, Q, color)
+    render_bezier_edge!(ctx, Q, P, color, reflect=true, line_width=render_params.line_width)
+    render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
     a, P = b, Q
 
     for rotor in reverse(enigma.rotors)
         b = decode(rotor, a)
         Q = VecE2(P.x - render_params.sep_horz, get_vertex_y(render_params, b))
-        render_bezier_edge!(ctx, Q, P, color)
-        render_vertex!(ctx, Q, color)
+        render_bezier_edge!(ctx, Q, P, color, line_width=render_params.line_width)
+        render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
         a, P = b, Q
     end
 
     if render_plugboard
         b = decode(enigma.plugboard, a)
         Q = VecE2(P.x - render_params.sep_horz, get_vertex_y(render_params, b))
-        render_bezier_edge!(ctx, P, Q, color, reflect=true)
-        render_vertex!(ctx, Q, color)
+        render_bezier_edge!(ctx, Q, P, color, line_width=render_params.line_width)
+        render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
         a, P = b, Q
     end
 
@@ -570,9 +634,9 @@ function render_rotor_tick!(
             Q = bezier(Q1, C, D, Q2, t)
         end
 
-        render_vertex!(ctx, P, color)
-        render_vertex!(ctx, Q, color)
-        render_bezier_edge!(ctx, P, Q, color)
+        render_vertex!(ctx, P, color, radius=render_params.vertex_radius)
+        render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
+        render_bezier_edge!(ctx, P, Q, color, line_width=render_params.line_width)
     end
 
     ctx
@@ -596,9 +660,9 @@ function render_engima_tick!(
             b = encode(plugboard, a)
             A = get_vertex_pos(render_params, 1, a)
             B = get_vertex_pos(render_params, 2, b)
-            render_bezier_edge!(ctx, A, B, color)
-            render_vertex!(ctx, A, color)
-            render_vertex!(ctx, B, color)
+            render_bezier_edge!(ctx, A, B, color, line_width=render_params.line_width)
+            render_vertex!(ctx, A, color, radius=render_params.vertex_radius)
+            render_vertex!(ctx, B, color, radius=render_params.vertex_radius)
         end
 
         render_params.margin_left += render_params.sep_horz
@@ -623,7 +687,7 @@ function render_engima_tick!(
         rp2 = deepcopy(render_params)
         rp2.margin_left = render_params.margin_left + render_params.sep_horz*(rotor_index-1)
 
-        render!(ctx, rotor, Int[], rp2)
+        render!(ctx, enigma.rotors[rotor_index], Int[], rp2)
         rotor_index += 1
     end
 
@@ -637,9 +701,9 @@ function render_engima_tick!(
 
             A = VecE2(ref_x, get_vertex_y(render_params, a))
             B = VecE2(ref_x, get_vertex_y(render_params, b))
-            render_bezier_edge!(ctx, A, B, color, reflect=true)
-            render_vertex!(ctx, A, color)
-            render_vertex!(ctx, B, color)
+            render_bezier_edge!(ctx, A, B, color, reflect=true, line_width=render_params.line_width)
+            render_vertex!(ctx, A, color, radius=render_params.vertex_radius)
+            render_vertex!(ctx, B, color, radius=render_params.vertex_radius)
         end
     end
 
@@ -677,23 +741,22 @@ end
 function render_enigma_io!(
     ctx::CairoContext,
     enigma::Enigma,
-    a::Int,
-    alphabet::Vector{Char};
+    a::Int;
     render_params::RotorRenderParams = RotorRenderParams(),
     font_size::Real=20.0,
     only_input::Bool=false,
     )
 
-    if 1 ≤ a ≤ length(alphabet)
+    if 1 ≤ a ≤ length(enigma.alphabet)
         b = encode(enigma, a)
 
         x = get_vertex_x(render_params, 1) - 50.0
         P = VecE2(x, get_vertex_y(render_params, a))
         Q = VecE2(x, get_vertex_y(render_params, b))
 
-        render_text_centered(ctx, string(alphabet[a]), P.x, P.y, font_size=font_size)
+        render_text_centered(ctx, string(enigma.alphabet[a]), P.x, P.y, font_size=font_size, color=MONOKAI_DARK)
         if !only_input
-            render_text_centered(ctx, string(alphabet[b]), Q.x, Q.y, font_size=font_size)
+            render_text_centered(ctx, string(enigma.alphabet[b]), Q.x, Q.y, font_size=font_size, color=MONOKAI_COBALT)
         end
     end
 
@@ -713,9 +776,9 @@ function render_text_and_ciphertext!(
     x = get_vertex_x(render_params, 1)
     y = get_vertex_y(render_params, length(enigma))
 
-    render_text(ctx, text, x, y + 50, font_size=font_size, font_face=font_face)
+    render_text(ctx, text, x, y + 50, font_size=font_size, font_face=font_face, color=MONOKAI_DARK)
     if !only_input
-        render_text(ctx, cipher_text, x, y + 100, font_size=font_size, font_face=font_face)
+        render_text(ctx, cipher_text, x, y + 100, font_size=font_size, font_face=font_face, color=MONOKAI_COBALT)
     end
     ctx
 end
@@ -738,7 +801,7 @@ function render(enigma::Enigma, input::Int=-1;
     render_params::RotorRenderParams = RotorRenderParams(),
     render_plugboard::Bool=true,
     render_labels::Bool=true,
-    render_input::Bool=false,
+    render_input::Bool=true,
     do_not_render_trace::Bool=false,
     only_input::Bool=false,
     )
@@ -749,12 +812,12 @@ function render(enigma::Enigma, input::Int=-1;
         render_enigma_labels!(ctx, enigma, render_params, render_plugboard)
     end
     if render_input
-        render_enigma_io!(ctx, enigma, input, alphabet, render_params, only_input=only_input)
+        render_enigma_io!(ctx, enigma, input, render_params=render_params, only_input=only_input)
     end
     s
 end
 
-function play_animation(enigma::Enigma, input::String, alphabet::Vector{Char},
+function play_animation(enigma::Enigma, input::String;
     render_params::RotorRenderParams = RotorRenderParams(),
     render_plugboard::Bool=true,
     font_size::Real=20.0,
@@ -790,7 +853,7 @@ function play_animation(enigma::Enigma, input::String, alphabet::Vector{Char},
         end
 
         A = input[input_index]
-        a = findfirst(alphabet, A)
+        a = findfirst(enigma.alphabet, A)
 
         # show input first
         s = render(enigma, a, render_params=render_params, render_plugboard=render_plugboard, do_not_render_trace=true, only_input=true)
@@ -805,7 +868,7 @@ function play_animation(enigma::Enigma, input::String, alphabet::Vector{Char},
             s, ctx = get_surface_and_context()
             render_engima_tick!(ctx, enigma, t, MONOKAI_DARK, render_params, render_plugboard)
             render_enigma_labels!(ctx, enigma, render_params, render_plugboard)
-            render_enigma_io!(ctx, enigma, a, alphabet, render_params=render_params, font_size=font_size, only_input=true)
+            render_enigma_io!(ctx, enigma, a, render_params=render_params, font_size=font_size, only_input=true)
             render_text_and_ciphertext!(ctx, enigma, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
             push!(frames, s)
         end
@@ -813,11 +876,74 @@ function play_animation(enigma::Enigma, input::String, alphabet::Vector{Char},
         # show trace
         tick!(enigma)
         b = encode(enigma, a)
-        B = alphabet[b]
+        B = enigma.alphabet[b]
         input_text = input_text * string(A)
         cipher_text = cipher_text * string(B)
         s = render(enigma, a, render_params=render_params, render_plugboard=render_plugboard, do_not_render_trace=false, only_input=false)
         s = render_text_and_ciphertext!(s, enigma, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+        for i in 1 : fp_show_trace
+            push!(frames, s)
+        end
+
+        input_index += 1
+    end
+
+    frames
+end
+function play_animation(rotor::Rotor, input::String, alphabet::Vector{Char};
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    fps::Int=12,
+    fp_render_nothing=6,
+    fp_show_input_first=4,
+    fp_show_trace=8,
+    )
+
+    input_text = ""
+    cipher_text = ""
+
+    frames = Frames(MIME("image/png"), fps=fps)
+
+    # render empty machine first
+    s = render(rotor, render_params=render_params)
+    s = render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+    for i in 1 : fp_render_nothing
+        push!(frames, s)
+    end
+
+    input_index = 1
+    while input_index ≤ length(input)
+
+        while input_index ≤ length(input) && input[input_index] == ' '
+            input_text = input_text * " "
+            cipher_text = cipher_text * " "
+            input_index += 1
+        end
+        if input_index > length(input)
+            break
+        end
+
+        A = input[input_index]
+        a = findfirst(alphabet, A)
+
+        # show input first
+        s, ctx = get_surface_and_context()
+        render!(ctx, rotor, Int[], render_params)
+        render_alphabet!(ctx, rotor, alphabet, render_params=render_params, font_size=font_size)
+        render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+        for i in 1 : fp_show_input_first
+            push!(frames, s)
+        end
+
+        # show trace
+        b = encode(rotor, a)
+        B = alphabet[b]
+        input_text = input_text * string(A)
+        cipher_text = cipher_text * string(B)
+        s, ctx = get_surface_and_context()
+        render!(ctx, rotor, [a], render_params)
+        render_alphabet!(ctx, rotor, alphabet, render_params=render_params, font_size=font_size)
+        render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
         for i in 1 : fp_show_trace
             push!(frames, s)
         end

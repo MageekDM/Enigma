@@ -28,7 +28,8 @@ function get_M3_enigma(
     ref::Char, # 'B' or 'C'
     wheels::Tuple{Int, Int, Int},
     rotor_pos::String, # the starting rotor positions, ex: "DVM"
-    plugboard_str::String="", # ex: "BI GP HK LD MO RT VS WZ XN YJ"
+    plugboard_str::String=""; # ex: "BI GP HK LD MO RT VS WZ XN YJ"
+    emulate_double_stepping::Bool=true,
     )
 
     if ref == 'B'
@@ -55,7 +56,8 @@ function get_M3_enigma(
         i += 2
     end
 
-    Enigma(plugboard, rotors, reflector)
+    alphabet = collect('A':'Z')
+    Enigma(plugboard, rotors, reflector, alphabet, emulate_double_stepping)
 end
 
 function encode!(enigma::Enigma, input::String)
