@@ -376,6 +376,153 @@ function decode(rotors::Vector{Rotor}, a::Int)
     end
     a
 end
+function tick!(rotors::Vector{Rotor}, rotor_index::Int=1)
+
+    # rotate the way you would expect.
+    # Thus "double stepping" does not occur, as it does with the real Enigma
+
+    rotor = rotors[rotor_index]
+    if mod(rotor.rotor_position,length(rotor))+1 in rotor.knock_points && rotor_index < length(rotors)
+        # rotate the next rotor as well
+        tick!(rotors, rotor_index+1)
+    end
+    tick!(rotor) # rotate this rotor
+    rotors
+end
+function render_alphabet!(
+    ctx::CairoContext,
+    rotors::Vector{Rotor},
+    alphabet::Vector{Char};
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    )
+
+    n = length(rotors)+1
+    for (i, c) in enumerate(alphabet)
+        P = get_vertex_pos(render_params, 1, i)
+        Q = get_vertex_pos(render_params, n, i)
+
+        render_text_centered(ctx, string(c), P.x - 50.0, P.y, font_size=font_size, color=MONOKAI_DARK)
+        render_text_centered(ctx, string(c), Q.x + 50.0, Q.y, font_size=font_size, color=MONOKAI_DARK)
+    end
+    ctx
+end
+function render_rotor_tick!(
+    ctx::CairoContext,
+    rotor::Rotor,
+    t::Float64, # ∈ [0,1]
+    color::Colorant,
+    render_params::RotorRenderParams = RotorRenderParams(),
+    bezier_strength::Real=125.0,
+    )
+
+    n = length(rotor)
+    for a1 in 1 : n
+
+        a2 = mod(a1-2, n)+1
+        P1 = get_vertex_pos(render_params, 1, a1)
+        P2 = get_vertex_pos(render_params, 1, a2)
+
+        if a2 != n
+            P = bezier(P1, P2, t)
+        else # use a special bezier
+            C = P1 - VecE2(0, bezier_strength)
+            D = P2 + VecE2(0, bezier_strength)
+            P = bezier(P1, C, D, P2, t)
+        end
+
+        b1 = encode(rotor, a1)
+        b2 = mod(b1-2,n)+1
+        Q1 = get_vertex_pos(render_params, 2, b1)
+        Q2 = get_vertex_pos(render_params, 2, b2)
+
+        if b2 != n
+            Q = bezier(Q1, Q2, t)
+        else
+            C = Q1 -VecE2(0, bezier_strength)
+            D = Q2 + VecE2(0, bezier_strength)
+            Q = bezier(Q1, C, D, Q2, t)
+        end
+
+        render_vertex!(ctx, P, color, radius=render_params.vertex_radius)
+        render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
+        render_bezier_edge!(ctx, P, Q, color, line_width=render_params.line_width)
+    end
+
+    ctx
+end
+function render_rotor_tick!(
+    ctx::CairoContext,
+    rotors::Vector{Rotor},
+    t::Float64, # ∈ [0,1]
+    color::Colorant,
+    render_params::RotorRenderParams = RotorRenderParams(),
+    )
+
+    n = length(rotors[1])
+    n_rotors = length(rotors)
+
+    left_offset = 0
+
+    rotor_index = 1
+    done = false
+    while !done
+        rotor = rotors[rotor_index]
+
+        rp2 = deepcopy(render_params)
+        rp2.margin_left = render_params.margin_left + render_params.sep_horz*(rotor_index-1)
+
+        render_rotor_tick!(ctx, rotor, t, color, rp2)
+        done = rotor_index == n_rotors || !in(mod(rotor.rotor_position,n)+1, rotor.knock_points)
+        rotor_index += 1
+    end
+
+    while rotor_index ≤ n_rotors
+
+        rp2 = deepcopy(render_params)
+        rp2.margin_left = render_params.margin_left + render_params.sep_horz*(rotor_index-1)
+
+        render!(ctx, rotors[rotor_index], Int[], rp2)
+        rotor_index += 1
+    end
+
+    ctx
+end
+function render_trace!(
+    ctx::CairoContext,
+    rotors::Vector{Rotor},
+    a::Int,
+    color::Colorant,
+    render_params::RotorRenderParams,
+    )
+
+    P = get_vertex_pos(render_params, 1, a)
+    render_vertex!(ctx, P, color, radius=render_params.vertex_radius)
+
+    for rotor in rotors
+        b = encode(rotor, a)
+        Q = VecE2(P.x + render_params.sep_horz, get_vertex_y(render_params, b))
+        render_bezier_edge!(ctx, P, Q, color, line_width=render_params.line_width)
+        render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
+        a, P = b, Q
+    end
+
+    ctx
+end
+function render!(
+    ctx::CairoContext,
+    rotors::Vector{Rotor},
+    input::Int,
+    render_params::RotorRenderParams,
+    )
+
+    for a in 1 : length(rotors[1])
+        color = a == input ? MONOKAI_BLUE : MONOKAI_DARK
+        render_trace!(ctx, rotors, a, color, render_params)
+    end
+
+    ctx
+end
 function render(rotors::Vector{Rotor};
     render_params::RotorRenderParams = RotorRenderParams(),
     )
@@ -390,6 +537,8 @@ function render(rotors::Vector{Rotor};
 
     s
 end
+
+
 
 let
     rotor = Rotor([4, 2, 1, 3])
@@ -462,19 +611,7 @@ function encode(enigma::Enigma, a::Int)
 end
 decode(enigma::Enigma, b::Int) = encode(enigma, b)
 
-function tick_with_mathematical_purity!(enigma::Enigma, rotor_index::Int=1)
-
-    # rotate the way you would expect.
-    # Thus "double stepping" does not occur, as it does with the real Enigma
-
-    rotor = enigma.rotors[rotor_index]
-    if mod(rotor.rotor_position,length(rotor))+1 in rotor.knock_points && rotor_index < length(enigma.rotors)
-        # rotate the next rotor as well
-        tick_with_mathematical_purity!(enigma, rotor_index+1)
-    end
-    tick!(rotor) # rotate this rotor
-    enigma
-end
+tick_with_mathematical_purity!(enigma::Enigma) = tick!(enigma.rotors)
 function tick_with_double_stepping!(enigma::Enigma)
 
     # rotor 1 is always moved
@@ -597,50 +734,6 @@ function render!(
     ctx
 end
 
-function render_rotor_tick!(
-    ctx::CairoContext,
-    rotor::Rotor,
-    t::Float64, # ∈ [0,1]
-    color::Colorant,
-    render_params::RotorRenderParams = RotorRenderParams(),
-    bezier_strength::Real=125.0,
-    )
-
-    n = length(rotor)
-    for a1 in 1 : n
-
-        a2 = mod(a1-2, n)+1
-        P1 = get_vertex_pos(render_params, 1, a1)
-        P2 = get_vertex_pos(render_params, 1, a2)
-
-        if a2 != n
-            P = bezier(P1, P2, t)
-        else # use a special bezier
-            C = P1 - VecE2(0, bezier_strength)
-            D = P2 + VecE2(0, bezier_strength)
-            P = bezier(P1, C, D, P2, t)
-        end
-
-        b1 = encode(rotor, a1)
-        b2 = mod(b1-2,n)+1
-        Q1 = get_vertex_pos(render_params, 2, b1)
-        Q2 = get_vertex_pos(render_params, 2, b2)
-
-        if b2 != n
-            Q = bezier(Q1, Q2, t)
-        else
-            C = Q1 -VecE2(0, bezier_strength)
-            D = Q2 + VecE2(0, bezier_strength)
-            Q = bezier(Q1, C, D, Q2, t)
-        end
-
-        render_vertex!(ctx, P, color, radius=render_params.vertex_radius)
-        render_vertex!(ctx, Q, color, radius=render_params.vertex_radius)
-        render_bezier_edge!(ctx, P, Q, color, line_width=render_params.line_width)
-    end
-
-    ctx
-end
 function render_engima_tick!(
     ctx::CairoContext,
     enigma::Enigma,
@@ -817,6 +910,139 @@ function render(enigma::Enigma, input::Int=-1;
     s
 end
 
+function play_animation(rotor::Rotor, input::String, alphabet::Vector{Char};
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    fps::Int=12,
+    fp_render_nothing=6,
+    fp_show_input_first=4,
+    fp_show_trace=8,
+    )
+
+    input_text = ""
+    cipher_text = ""
+
+    frames = Frames(MIME("image/png"), fps=fps)
+
+    # render empty machine first
+    s, ctx = get_surface_and_context()
+    render!(ctx, rotor, Int[], render_params)
+    render_alphabet!(ctx, rotor, alphabet, render_params=render_params, font_size=font_size)
+    render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+    for i in 1 : fp_render_nothing
+        push!(frames, s)
+    end
+
+    input_index = 1
+    while input_index ≤ length(input)
+
+        while input_index ≤ length(input) && input[input_index] == ' '
+            input_text = input_text * " "
+            cipher_text = cipher_text * " "
+            input_index += 1
+        end
+        if input_index > length(input)
+            break
+        end
+
+        A = input[input_index]
+        a = findfirst(alphabet, A)
+
+        # show input first
+        s, ctx = get_surface_and_context()
+        render!(ctx, rotor, Int[], render_params)
+        render_alphabet!(ctx, rotor, alphabet, render_params=render_params, font_size=font_size)
+        render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+        for i in 1 : fp_show_input_first
+            push!(frames, s)
+        end
+
+        # show trace
+        b = encode(rotor, a)
+        B = alphabet[b]
+        input_text = input_text * string(A)
+        cipher_text = cipher_text * string(B)
+        s, ctx = get_surface_and_context()
+        render!(ctx, rotor, [a], render_params)
+        render_alphabet!(ctx, rotor, alphabet, render_params=render_params, font_size=font_size)
+        render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
+        for i in 1 : fp_show_trace
+            push!(frames, s)
+        end
+
+        input_index += 1
+    end
+
+    frames
+end
+function play_animation(rotors::Vector{Rotor}, input::String, alphabet::Vector{Char};
+    render_params::RotorRenderParams = RotorRenderParams(),
+    font_size::Real=20.0,
+    fps::Int=12,
+    fp_render_nothing=6,
+    fp_show_input_first=2,
+    fp_rot::Int=24,
+    fp_show_trace=4,
+    )
+
+    input_text = ""
+    cipher_text = ""
+
+    frames = Frames(MIME("image/png"), fps=fps)
+
+    # render empty machine first
+    s = render(rotors, render_params=render_params)
+    ctx = creategc(s)
+    render_text_and_ciphertext!(ctx, rotors[1], input_text, cipher_text, render_params=render_params, font_size=1.5*font_size)
+    render_alphabet!(ctx, rotors, alphabet, render_params=render_params, font_size=font_size)
+    for i in 1 : fp_render_nothing
+        push!(frames, s)
+    end
+
+    input_index = 1
+    while input_index ≤ length(input)
+
+        while input_index ≤ length(input) && input[input_index] == ' '
+            input_text = input_text * " "
+            cipher_text = cipher_text * " "
+            input_index += 1
+        end
+        if input_index > length(input)
+            break
+        end
+
+        A = input[input_index]
+        a = findfirst(alphabet, A)
+
+        # rotate the machine
+        for i in 1 : fp_rot
+            t = i/fp_rot
+            s, ctx = get_surface_and_context()
+            render_rotor_tick!(ctx, rotors, t, MONOKAI_DARK, render_params)
+            render_text_and_ciphertext!(ctx, rotors[1], input_text, cipher_text, render_params=render_params, font_size=1.5*font_size)
+            render_alphabet!(ctx, rotors, alphabet, render_params=render_params, font_size=font_size)
+            push!(frames, s)
+        end
+
+        # show trace
+        tick!(rotors)
+        b = encode(rotors, a)
+        B = alphabet[b]
+        input_text = input_text * string(A)
+        cipher_text = cipher_text * string(B)
+        s, ctx = get_surface_and_context()
+        render!(ctx, rotors, a, render_params)
+        render_text_and_ciphertext!(ctx, rotors[1], input_text, cipher_text, render_params=render_params, font_size=1.5*font_size)
+        render_alphabet!(ctx, rotors, alphabet, render_params=render_params, font_size=font_size)
+        for i in 1 : fp_show_trace
+            push!(frames, s)
+        end
+
+        input_index += 1
+    end
+
+    frames
+end
 function play_animation(enigma::Enigma, input::String;
     render_params::RotorRenderParams = RotorRenderParams(),
     render_plugboard::Bool=true,
@@ -881,69 +1107,6 @@ function play_animation(enigma::Enigma, input::String;
         cipher_text = cipher_text * string(B)
         s = render(enigma, a, render_params=render_params, render_plugboard=render_plugboard, do_not_render_trace=false, only_input=false)
         s = render_text_and_ciphertext!(s, enigma, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
-        for i in 1 : fp_show_trace
-            push!(frames, s)
-        end
-
-        input_index += 1
-    end
-
-    frames
-end
-function play_animation(rotor::Rotor, input::String, alphabet::Vector{Char};
-    render_params::RotorRenderParams = RotorRenderParams(),
-    font_size::Real=20.0,
-    fps::Int=12,
-    fp_render_nothing=6,
-    fp_show_input_first=4,
-    fp_show_trace=8,
-    )
-
-    input_text = ""
-    cipher_text = ""
-
-    frames = Frames(MIME("image/png"), fps=fps)
-
-    # render empty machine first
-    s = render(rotor, render_params=render_params)
-    s = render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
-    for i in 1 : fp_render_nothing
-        push!(frames, s)
-    end
-
-    input_index = 1
-    while input_index ≤ length(input)
-
-        while input_index ≤ length(input) && input[input_index] == ' '
-            input_text = input_text * " "
-            cipher_text = cipher_text * " "
-            input_index += 1
-        end
-        if input_index > length(input)
-            break
-        end
-
-        A = input[input_index]
-        a = findfirst(alphabet, A)
-
-        # show input first
-        s, ctx = get_surface_and_context()
-        render!(ctx, rotor, Int[], render_params)
-        render_alphabet!(ctx, rotor, alphabet, render_params=render_params, font_size=font_size)
-        render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
-        for i in 1 : fp_show_input_first
-            push!(frames, s)
-        end
-
-        # show trace
-        b = encode(rotor, a)
-        B = alphabet[b]
-        input_text = input_text * string(A)
-        cipher_text = cipher_text * string(B)
-        s, ctx = get_surface_and_context()
-        render!(ctx, rotor, [a], render_params)
-        render_alphabet!(ctx, rotor, alphabet, render_params=render_params, font_size=font_size)
-        render_text_and_ciphertext!(s, rotor, input_text, cipher_text, render_params=render_params, font_size=1.5*font_size, only_input=false)
         for i in 1 : fp_show_trace
             push!(frames, s)
         end
