@@ -3,6 +3,8 @@ using Colors
 using Vec
 using Reel
 
+Reel.set_output_type("gif")
+
 const MONOKAI_LITE = colorant"0xCFBFADFF"
 const MONOKAI_DARK = colorant"0x272822FF"
 const MONOKAI_BLUE   = colorant"0x52E3F6FF"
@@ -96,8 +98,8 @@ function get_surface_and_context(canvas_width::Int, canvas_height::Int)
     (s, ctx)
 end
 function get_surface_and_context(;
-    canvas_width::Int = 1000,
-    canvas_height::Int = 500,
+    canvas_width::Int = 590,
+    canvas_height::Int = 400,
     background_color::Colorant = colorant"white",
     )
 
@@ -124,7 +126,7 @@ type RotorRenderParams
     line_width::Float64
 
     function RotorRenderParams()
-        new(200.0, 50.0, 100.0, 200.0, 10.0, 5.0)
+        new(150.0, 30.0, 80.0, 200.0, 8.0, 4.0)
     end
     function RotorRenderParams(margin_left::Real, margin_top::Real, sep_vert::Real, sep_horz::Real, vertex_radius::Real, line_width::Real)
         new(
@@ -172,11 +174,6 @@ function encode(rotor::Rotor, a::Int)
     a₂ = mod(a₂-1, n)+1
     b = a + rotor.enshift[a₂]
     mod(b-1, n)+1
-
-    # a₂ = a - rotor.rotor_position
-    # b = rotor.perm[mod(a₂-1, n)+1]
-    # Δ = b - a₂
-    # mod(a + Δ - 1, n)+1
 end
 function decode(rotor::Rotor, a::Int)
     n = length(rotor.deshift) # number of letters
@@ -184,17 +181,11 @@ function decode(rotor::Rotor, a::Int)
     a₂ = mod(a₂-1, n)+1
     b = a + rotor.deshift[a₂]
     mod(b-1, n)+1
-    # for b in 1 : length(rotor.enshift)
-    #     if encode(rotor, b) == a
-    #         return b
-    #     end
-    # end
-    # error("decode not possible")
 end
 
 function render_bezier_edge!(ctx::CairoContext, A::VecE2, D::VecE2, color::Colorant=MONOKAI_DARK;
     line_width::Real = 5.0,
-    bezier_strength::Real = 150.0,
+    bezier_strength::Real = 100.0,
     reflect::Bool=false,
     )
 
@@ -605,9 +596,11 @@ type Enigma
 end
 Base.length(enigma::Enigma) = length(enigma.ref)
 function encode(enigma::Enigma, a::Int)
-    b = encode(enigma.rotors, a)
-    c = encode(enigma.ref, b)
-    decode(enigma.rotors, c)
+    b = encode(enigma.plugboard, a)
+    c = encode(enigma.rotors, b)
+    d = encode(enigma.ref, c)
+    e = decode(enigma.rotors, d)
+    decode(enigma.plugboard, e)
 end
 decode(enigma::Enigma, b::Int) = encode(enigma, b)
 
@@ -723,12 +716,12 @@ function render!(
 
     rendered = Set{Int}()
     for a in 1 : length(enigma)
-        if !in(a, rendered)
+        # if !in(a, rendered)
             b = encode(enigma, a)
-            push!(rendered, b)
-            color = a == input || b == input ? MONOKAI_BLUE : MONOKAI_DARK
+            # push!(rendered, b)
+            color = (a == input || b == input) ? MONOKAI_BLUE : MONOKAI_DARK
             render_trace!(ctx, enigma, a, color, render_params, render_plugboard)
-        end
+        # end
     end
 
     ctx

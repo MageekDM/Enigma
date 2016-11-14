@@ -90,7 +90,7 @@ let
     @assert encode!(enigma, output2) == input
 
     enigma = get_M3_enigma('C', (8,2,4), "PXM", "AB CY ET FQ HZ LG MJ OK US WX")
-    output3 = "GXUH"*"KCKB"*"QJKL"*"QJUZ"*"SFNU"*"BQBX"*"HFYM"*"DIRE"*"PIRN"
+    output3 = "ULQC"*"XYXN"*"JMKV"*"FNAO"*"IVZS"*"OFTW"*"GQBB"*"XNWW"*"BIYS"
     @assert encode!(enigma, input) == output3
     enigma = get_M3_enigma('C', (8,2,4), "PXM", "AB CY ET FQ HZ LG MJ OK US WX")
     @assert encode!(enigma, output3) == input
